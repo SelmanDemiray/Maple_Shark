@@ -17,30 +17,185 @@ use std::time::{SystemTime, UNIX_EPOCH, Duration};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
 
+// Windows type definitions and FFI declarations
 #[cfg(target_os = "windows")]
-use winapi::um::winsock2::{SOCKET, INVALID_SOCKET, SOCKET_ERROR, WSADATA, WSAStartup, WSACleanup, WSAGetLastError};
-#[cfg(target_os = "windows")]
-use winapi::um::winsock2::{recv, bind, closesocket, socket, WSAIoctl, FIONBIO, ioctlsocket};
-#[cfg(target_os = "windows")]
-use winapi::shared::ws2def::{AF_INET, SOCK_RAW, SOCKADDR, SOCKADDR_IN};
-#[cfg(target_os = "windows")]
-use winapi::shared::minwindef::DWORD;
-#[cfg(target_os = "windows")]
-use winapi::um::securitybaseapi::GetTokenInformation;
-#[cfg(target_os = "windows")]
-use winapi::um::processthreadsapi::OpenProcessToken;
-#[cfg(target_os = "windows")]
-use winapi::um::winnt::{TOKEN_QUERY, HANDLE, TokenElevation, TOKEN_ELEVATION};
-#[cfg(target_os = "windows")]
-use winapi::um::handleapi::CloseHandle;
-#[cfg(target_os = "windows")]
-use winapi::shared::ws2def::INADDR_ANY;
-#[cfg(target_os = "windows")]
-use winapi::um::iphlpapi::GetAdaptersAddresses;
+mod windows_ffi {
+    // Type aliases
+    pub type SOCKET = usize;
+    pub type DWORD = u32;
+    pub type HANDLE = *mut u8;
+    pub type WORD = u16;
+    pub type ULONG = u32;
+    pub type ULONG64 = u64;
+    pub type BOOL = i32;
 
-// Windows IP protocol constants
+    // Constants
+    pub const INVALID_SOCKET: SOCKET = !0;
+    pub const SOCKET_ERROR: i32 = -1;
+    pub const AF_INET: i32 = 2;
+    pub const SOCK_RAW: i32 = 3;
+    pub const IPPROTO_IP: i32 = 0;
+    pub const FIONBIO: u32 = 0x8004667E;
+    pub const SIO_RCVALL: u32 = 0x98000001;
+    pub const RCVALL_ON: u32 = 1;
+    pub const RCVALL_OFF: u32 = 0;
+    pub const TOKEN_QUERY: u32 = 0x0008;
+    pub const TokenElevation: u32 = 20;
+    pub const INADDR_ANY: u32 = 0;
+    pub const GAA_FLAG_INCLUDE_PREFIX: u32 = 0x0010;
+    pub const AF_UNSPEC: u32 = 0;
+    pub const IF_OPER_STATUS_UP: u32 = 1;
+
+    // WSADATA structure
+    #[repr(C)]
+    pub struct WSADATA {
+        pub wVersion: WORD,
+        pub wHighVersion: WORD,
+        pub szDescription: [u8; 257],
+        pub szSystemStatus: [u8; 129],
+        pub iMaxSockets: u16,
+        pub iMaxUdpDg: u16,
+        pub lpVendorInfo: *mut i8,
+    }
+
+    // SOCKADDR structure
+    #[repr(C)]
+    pub struct SOCKADDR {
+        pub sa_family: u16,
+        pub sa_data: [u8; 14],
+    }
+
+    // SOCKADDR_IN structure
+    #[repr(C)]
+    pub struct SOCKADDR_IN {
+        pub sin_family: u16,
+        pub sin_port: u16,
+        pub sin_addr: u32, // in_addr as u32 (S_un.S_addr)
+        pub sin_zero: [u8; 8],
+    }
+
+    // in_addr (simplified - just u32 for S_un.S_addr)
+    pub type in_addr = u32;
+
+    // SOCKET_ADDRESS structure
+    #[repr(C)]
+    pub struct SOCKET_ADDRESS {
+        pub lpSockaddr: *mut SOCKADDR,
+        pub iSockaddrLength: i32,
+    }
+
+    // IP_ADAPTER_UNICAST_ADDRESS structure
+    #[repr(C)]
+    pub struct IP_ADAPTER_UNICAST_ADDRESS {
+        pub Length: ULONG,
+        pub Flags: u32,
+        pub Next: *mut IP_ADAPTER_UNICAST_ADDRESS,
+        pub Address: SOCKET_ADDRESS,
+        pub PrefixOrigin: u32,
+        pub SuffixOrigin: u32,
+        pub DadState: u32,
+        pub ValidLifetime: ULONG,
+        pub PreferredLifetime: ULONG,
+        pub LeaseLifetime: ULONG,
+        pub OnLinkPrefixLength: u8,
+    }
+
+    // IP_ADAPTER_ADDRESSES structure
+    #[repr(C)]
+    pub struct IP_ADAPTER_ADDRESSES {
+        pub Length: ULONG,
+        pub IfIndex: u32,
+        pub Next: *mut IP_ADAPTER_ADDRESSES,
+        pub AdapterName: *mut i8,
+        pub FirstUnicastAddress: *mut IP_ADAPTER_UNICAST_ADDRESS,
+        pub FirstAnycastAddress: *mut u8, // Not used, but needed for alignment
+        pub FirstMulticastAddress: *mut u8, // Not used, but needed for alignment
+        pub FirstDnsServerAddress: *mut u8, // Not used, but needed for alignment
+        pub DnsSuffix: *mut u16,
+        pub Description: *mut u16,
+        pub FriendlyName: *mut u16,
+        pub PhysicalAddress: [u8; 8],
+        pub PhysicalAddressLength: ULONG,
+        pub Flags: ULONG,
+        pub Mtu: ULONG,
+        pub IfType: u32,
+        pub OperStatus: u32,
+        pub Ipv6IfIndex: u32,
+        pub ZoneIndices: [ULONG; 16],
+        pub FirstPrefix: *mut u8, // Not used, but needed for alignment
+    }
+
+    // TOKEN_ELEVATION structure
+    #[repr(C)]
+    pub struct TOKEN_ELEVATION {
+        pub TokenIsElevated: u32,
+    }
+
+    // Winsock2 functions (ws2_32.dll)
+    #[link(name = "ws2_32")]
+    extern "system" {
+        pub fn WSAStartup(wVersionRequested: WORD, lpWSAData: *mut WSADATA) -> i32;
+        pub fn WSACleanup() -> i32;
+        pub fn WSAGetLastError() -> i32;
+        pub fn socket(af: i32, socket_type: i32, protocol: i32) -> SOCKET;
+        pub fn recv(s: SOCKET, buf: *mut i8, len: i32, flags: i32) -> i32;
+        pub fn bind(s: SOCKET, name: *const SOCKADDR, namelen: i32) -> i32;
+        pub fn closesocket(s: SOCKET) -> i32;
+        pub fn ioctlsocket(s: SOCKET, cmd: u32, argp: *mut u32) -> i32;
+        pub fn WSAIoctl(
+            s: SOCKET,
+            dwIoControlCode: u32,
+            lpvInBuffer: *mut u8,
+            cbInBuffer: u32,
+            lpvOutBuffer: *mut u8,
+            cbOutBuffer: u32,
+            lpcbBytesReturned: *mut u32,
+            lpOverlapped: *mut u8,
+            lpCompletionRoutine: *mut u8, // LPWSAOVERLAPPED_COMPLETION_ROUTINE (function pointer or null)
+        ) -> i32;
+    }
+
+    // IP Helper API functions (iphlpapi.dll)
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        pub fn GetAdaptersAddresses(
+            Family: ULONG,
+            Flags: ULONG,
+            Reserved: *mut u8,
+            AdapterAddresses: *mut IP_ADAPTER_ADDRESSES,
+            SizePointer: *mut ULONG,
+        ) -> u32;
+    }
+
+    // Security API functions (advapi32.dll)
+    #[link(name = "advapi32")]
+    extern "system" {
+        pub fn OpenProcessToken(
+            ProcessHandle: HANDLE,
+            DesiredAccess: u32,
+            TokenHandle: *mut HANDLE,
+        ) -> BOOL;
+        pub fn GetTokenInformation(
+            TokenHandle: HANDLE,
+            TokenInformationClass: u32,
+            TokenInformation: *mut u8,
+            TokenInformationLength: u32,
+            ReturnLength: *mut u32,
+        ) -> BOOL;
+    }
+
+    // Kernel32 functions (kernel32.dll)
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn GetCurrentProcess() -> HANDLE;
+        pub fn CloseHandle(hObject: HANDLE) -> BOOL;
+    }
+}
+
 #[cfg(target_os = "windows")]
-const IPPROTO_IP: i32 = 0;
+use windows_ffi::*;
+
+// Windows IP protocol constants (additional ones not in windows_ffi)
 #[cfg(target_os = "windows")]
 const IPPROTO_ICMP: i32 = 1;
 #[cfg(target_os = "windows")]
@@ -89,17 +244,7 @@ const SOL_SOCKET: i32 = 1;
 #[cfg(target_os = "linux")]
 const SO_ERROR: i32 = 4;
 
-// Windows constants
-#[cfg(target_os = "windows")]
-const SIO_RCVALL: u32 = 0x98000001;
-#[cfg(target_os = "windows")]
-const RCVALL_ON: u32 = 1;
-#[cfg(target_os = "windows")]
-const RCVALL_OFF: u32 = 0;
-#[cfg(target_os = "windows")]
-const GAA_FLAG_INCLUDE_PREFIX: u32 = 0x0010;
-#[cfg(target_os = "windows")]
-const AF_UNSPEC: u32 = 0;
+// Windows constants are now defined in windows_ffi module
 
 // BPF instruction structure
 #[repr(C)]
@@ -254,21 +399,19 @@ struct PacketMreq {
 #[cfg(target_os = "windows")]
 fn is_running_as_admin() -> bool {
     unsafe {
-        use winapi::um::processthreadsapi::GetCurrentProcess;
-        
         let mut token: HANDLE = ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return false;
         }
         
         let mut elevation: TOKEN_ELEVATION = mem::zeroed();
-        let mut return_length: DWORD = 0;
+        let mut return_length: u32 = 0;
         
         let result = GetTokenInformation(
             token,
             TokenElevation,
-            &mut elevation as *mut _ as *mut _,
-            mem::size_of::<TOKEN_ELEVATION>() as DWORD,
+            &mut elevation as *mut _ as *mut u8,
+            mem::size_of::<TOKEN_ELEVATION>() as u32,
             &mut return_length,
         );
         
@@ -385,11 +528,6 @@ impl Pcap {
     fn get_all_local_ips(&self) -> Result<Vec<u32>, String> {
         // Get all non-loopback IPv4 addresses from operational adapters
         unsafe {
-            use winapi::um::iptypes::IP_ADAPTER_ADDRESSES;
-            
-            // IfOperStatusUp = 1 (from ifdef.h)
-            const IF_OPER_STATUS_UP: u32 = 1;
-            
             let mut buffer_size: u32 = 15000; // Start with 15KB
             let mut buffer: Vec<u8> = Vec::new();
             let mut result: u32;
@@ -440,9 +578,9 @@ impl Pcap {
                         if sockaddr_ref.sa_family == AF_INET as u16 {
                             let sockaddr_in = sockaddr as *const SOCKADDR_IN;
                             let sockaddr_in_ref = &*sockaddr_in;
-                            // Access in_addr as u32 using transmute (in_addr is a union with S_un.S_addr as u32)
+                            // Access in_addr as u32 (sin_addr is already u32)
                             // The value is in network byte order (big-endian)
-                            let ip: u32 = mem::transmute(sockaddr_in_ref.sin_addr);
+                            let ip: u32 = sockaddr_in_ref.sin_addr;
                             
                             // Skip loopback (127.0.0.1) and INADDR_ANY - IP is in network byte order
                             // 127.0.0.1 = 0x7f000001 in network byte order
@@ -562,19 +700,19 @@ impl Pcap {
         }
 
         unsafe {
-            let mut bytes_returned: DWORD = 0;
+            let mut bytes_returned: u32 = 0;
             let mut option: u32 = RCVALL_ON;
             
             let result = WSAIoctl(
                 fd,
                 SIO_RCVALL,
-                &mut option as *mut _ as *mut _,
+                &mut option as *mut _ as *mut u8,
                 mem::size_of::<u32>() as u32,
                 ptr::null_mut(),
                 0,
                 &mut bytes_returned,
                 ptr::null_mut(),
-                None,
+                ptr::null_mut(),
             );
 
             if result == SOCKET_ERROR {
@@ -708,8 +846,8 @@ impl Pcap {
                 for ip in &local_ips {
                     let mut addr: SOCKADDR_IN = mem::zeroed();
                     addr.sin_family = AF_INET as u16;
-                    // Set in_addr from u32 using transmute (in_addr is just a u32)
-                    addr.sin_addr = mem::transmute(*ip);
+                    // Set in_addr from u32 (sin_addr is already u32)
+                    addr.sin_addr = *ip;
                     addr.sin_port = 0;
 
                     let bind_result = bind(
